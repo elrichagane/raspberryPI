@@ -18,9 +18,38 @@ import RPi.GPIO as GPIO
 
 GPIO.setwarnings(False) # Ignore warning for now
 GPIO.setmode(GPIO.BOARD) # Use physical pin numbering
-GPIO.setup(8, GPIO.OUT, initial=GPIO.LOW) # Set pin 8 to be an output pin and set initial value to low (off)
+GPIO.setup(8, GPIO.OUT, initial=GPIO.LOW) # Set pin 8 to be an output pin for video timestamp and set initial value to low (off)
 GPIO.setup(10, GPIO.OUT, initial=GPIO.LOW) # Set pin 10 to be an output pin for audio tone and set initial value to low (off)
 GPIO.setup(12, GPIO.OUT, initial=GPIO.LOW) # Set pin 12 to be an output pin for stim and set initial value to low (off)
+GPIO.setup(16, GPIO.OUT, initial=GPIO.LOW) # Set pin 12 to be an output pin for led and set initial value to low (off)
+GPIO.setup(18, GPIO.OUT, initial=GPIO.LOW) # Set pin 12 to be an output pin for led timestamp and set initial value to low (off)
+
+# audio garbage stuff....
+LENGTH=1
+FREQUENCY=440
+PyAudio = pyaudio.PyAudio     #initialize pyaudio
+
+BITRATE = 16000     #number of frames per second/frameset.      
+
+if FREQUENCY > BITRATE:
+    BITRATE = FREQUENCY+100
+
+NUMBEROFFRAMES = int(BITRATE * LENGTH)
+RESTFRAMES = NUMBEROFFRAMES % BITRATE
+WAVEDATA = ''    
+
+#generating wawes
+for x in range(NUMBEROFFRAMES):
+    WAVEDATA = WAVEDATA+chr(int(math.sin(x/((BITRATE/FREQUENCY)/math.pi))*127+128))    
+
+for x in range(RESTFRAMES): 
+    WAVEDATA = WAVEDATA+chr(128)
+p = PyAudio()
+stream = p.open(format = p.get_format_from_width(1), 
+                channels = 1, 
+                rate = BITRATE, 
+                output = True)
+# end of audio garbage
 
 
 class thread_stream: #create separate thread for reading frames from camera to increase FPS
@@ -56,37 +85,14 @@ def pulse(pulse_len=0.01, pin=8):
     GPIO.output(pin, GPIO.LOW) # Turn off
 
 ### generate mother fucking stupid sound
-def beep(FREQUENCY=440, LENGTH=1):
-    PyAudio = pyaudio.PyAudio     #initialize pyaudio
-    
-    BITRATE = 16000     #number of frames per second/frameset.      
-    
-    if FREQUENCY > BITRATE:
-        BITRATE = FREQUENCY+100
-    
-    NUMBEROFFRAMES = int(BITRATE * LENGTH)
-    RESTFRAMES = NUMBEROFFRAMES % BITRATE
-    WAVEDATA = ''    
-    
-    #generating wawes
-    for x in range(NUMBEROFFRAMES):
-     WAVEDATA = WAVEDATA+chr(int(math.sin(x/((BITRATE/FREQUENCY)/math.pi))*127+128))    
-    
-    for x in range(RESTFRAMES): 
-     WAVEDATA = WAVEDATA+chr(128)
-    
-    p = PyAudio()
-    stream = p.open(format = p.get_format_from_width(1), 
-                    channels = 1, 
-                    rate = BITRATE, 
-                    output = True)
-    
+def beep(stream, WAVEDATA):
     Thread(target=pulse, args=(LENGTH, 10)).start()
     stream.write(WAVEDATA)
-    stream.stop_stream()
-    stream.close()
+    time.sleep(2)
+    Thread(target=pulse, args=(LENGTH, 16)).start()
+    time.sleep(3)
+    Thread(target=pulse, args=(LENGTH, 18)).start()
     Thread(target=pulse, args=(0.05, 12)).start()
-    p.terminate()
 
 
 ### main programme
@@ -107,13 +113,16 @@ while cam.isRunning():
     cv2.imshow("Live Feed", frame)
     key = cv2.waitKey(1)
     if key == ord('t'):
-        #Thread(target=beep, args=()).start()
-        Process(target=beep).start()
+        Thread(target=beep, args=(stream, WAVEDATA)).start()
+        #Process(target=beep).start()
     elif key == ord('q'):
         break
 
 cam.stop()
 out.release()
 cv2.destroyWindow("Live Feed")
+stream.stop_stream()
+stream.close()
+p.terminate()
 
 print('done acquisition and exited without error :)')
