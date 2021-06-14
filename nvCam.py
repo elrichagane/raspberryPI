@@ -21,8 +21,8 @@ GPIO.setmode(GPIO.BOARD) # Use physical pin numbering
 GPIO.setup(8, GPIO.OUT, initial=GPIO.LOW) # Set pin 8 to be an output pin for video timestamp and set initial value to low (off)
 GPIO.setup(10, GPIO.OUT, initial=GPIO.LOW) # Set pin 10 to be an output pin for audio tone and set initial value to low (off)
 GPIO.setup(12, GPIO.OUT, initial=GPIO.LOW) # Set pin 12 to be an output pin for stim and set initial value to low (off)
-GPIO.setup(16, GPIO.OUT, initial=GPIO.LOW) # Set pin 12 to be an output pin for led and set initial value to low (off)
-GPIO.setup(18, GPIO.OUT, initial=GPIO.LOW) # Set pin 12 to be an output pin for led timestamp and set initial value to low (off)
+GPIO.setup(16, GPIO.OUT, initial=GPIO.LOW) # Set pin 16 to be an output pin for led and set initial value to low (off)
+GPIO.setup(18, GPIO.OUT, initial=GPIO.LOW) # Set pin 18 to be an output pin for led timestamp and set initial value to low (off)
 
 # audio garbage stuff....
 LENGTH=1
@@ -90,8 +90,8 @@ def beep(stream, WAVEDATA):
     stream.write(WAVEDATA)
     time.sleep(2)
     Thread(target=pulse, args=(LENGTH, 16)).start()
-    time.sleep(3)
     Thread(target=pulse, args=(LENGTH, 18)).start()
+    time.sleep(3)
     Thread(target=pulse, args=(0.05, 12)).start()
 
 
