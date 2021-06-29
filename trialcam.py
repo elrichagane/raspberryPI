@@ -12,7 +12,7 @@ import RPi.GPIO as GPIO
 GPIO.setwarnings(False) # Ignore warning for now
 GPIO.setmode(GPIO.BOARD) # Use physical pin numbering
 GPIO.setup(8, GPIO.OUT, initial=GPIO.LOW) # Set pin 8 to be an output pin for video timestamp and set initial value to low (off)
-GPIO.setup(10, GPIO.OUT, initial=GPIO.LOW) # Set pin 8 to be an output pin for video timestamp and set initial value to low (off)
+GPIO.setup(10, GPIO.OUT, initial=GPIO.LOW) # Set pin 10 to be an output pin for audio timestamp and set initial value to low (off)
 GPIO.setup(12, GPIO.OUT, initial=GPIO.LOW) # Set pin 12 to be an output pin for stim and set initial value to low (off)
 GPIO.setup(16, GPIO.OUT, initial=GPIO.LOW) # Set pin 16 to be an output pin for led and set initial value to low (off)
 GPIO.setup(18, GPIO.OUT, initial=GPIO.LOW) # Set pin 18  to be an output pin for led timestamp and set initial value to low (off)
