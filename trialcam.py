@@ -44,7 +44,7 @@ stream = p.open(format = p.get_format_from_width(1),
                 output = True)
 # end of audio garbage
 
-class motherfucker(object):
+class stupidcam(object):
     def __init__(self, camera, fn):
         self.camera = camera
         self.video_output = io.open(fn, 'wb')
@@ -58,7 +58,7 @@ def pulse(pulse_len=0.005, pin=8):
     time.sleep(pulse_len)
     GPIO.output(pin, GPIO.LOW) # Turn off
 
-### generate mother fucking stupid sound
+### generate stupid sound
 def beep(stream, WAVEDATA):
     Thread(target=pulse, args=(LENGTH, 10)).start()
     stream.write(WAVEDATA)
@@ -68,7 +68,7 @@ def beep(stream, WAVEDATA):
     Thread(target=pulse, args=(0.05, 12)).start()
 
 def killcam(cam):
-    print('fuck off bitch!')
+    print('go away!')
     cam.stop_recording()
 
 if len(sys.argv) < 3:
@@ -86,7 +86,7 @@ keyboard.add_hotkey('t', beep, args=(stream, WAVEDATA))
 keyboard.add_hotkey('q', killcam, args=[cam])
 
 cam.start_preview(fullscreen=False, window = (0, 0, 640, 480))
-cam.start_recording(motherfucker(cam, fn), format='h264')
+cam.start_recording(stupidcam(cam, fn), format='h264')
 cam.wait_recording(24 * 60 * 60)
 cam.stop_preview()
 cam.stop_recording()
