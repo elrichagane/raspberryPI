@@ -1,93 +1,269 @@
-import picamera
-import io
-import time
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+"""
+Python 2.7 (Raspberry Pi):
+- Record H.264 video with PiCamera
+- Emit TTL pulse on ONE GPIO pin (BOARD 8) once per completed camera frame
+- Print to terminal:
+    * when GPIO goes HIGH
+    * when GPIO goes LOW
+    * when a USB serial line is received from Arduino
+
+Usage:
+    python record_cam_terminal.py <animal_id> <session_id>
+
+Output video:
+    YYYYMMDD_HHMMSS_<animal_id>_<session_id>.h264
+"""
+
 import datetime
-import keyboard
-import math
-import pyaudio
-from threading import Thread
+import io
 import sys
+import time
+import threading
+
+import picamera
 import RPi.GPIO as GPIO
 
-GPIO.setwarnings(False) # Ignore warning for now
-GPIO.setmode(GPIO.BOARD) # Use physical pin numbering
-GPIO.setup(8, GPIO.OUT, initial=GPIO.LOW) # Set pin 8 to be an output pin for video timestamp and set initial value to low (off)
-GPIO.setup(10, GPIO.OUT, initial=GPIO.LOW) # Set pin 10 to be an output pin for audio timestamp and set initial value to low (off)
-GPIO.setup(12, GPIO.OUT, initial=GPIO.LOW) # Set pin 12 to be an output pin for stim and set initial value to low (off)
-GPIO.setup(16, GPIO.OUT, initial=GPIO.LOW) # Set pin 16 to be an output pin for led and set initial value to low (off)
-GPIO.setup(18, GPIO.OUT, initial=GPIO.LOW) # Set pin 18  to be an output pin for led timestamp and set initial value to low (off)
+# requires pyserial on the Pi: sudo pip install pyserial
+import serial
 
-# audio garbage stuff....
-LENGTH=1
-FREQUENCY=16000
-PyAudio = pyaudio.PyAudio     #initialize pyaudio
 
-BITRATE = 16000     #number of frames per second/frameset.      
+# ----------------------------
+# Configuration
+# ----------------------------
+GPIO_MODE = GPIO.BOARD
+PULSE_PIN = 8
+PULSE_LEN_S = 0.005
 
-if FREQUENCY > BITRATE:
-    BITRATE = FREQUENCY+100
+RESOLUTION = (640, 480)
+FRAMERATE = 30
 
-NUMBEROFFRAMES = int(BITRATE * LENGTH)
-RESTFRAMES = NUMBEROFFRAMES % BITRATE
-WAVEDATA = ''    
+SERIAL_PORT = "/dev/ttyACM0"   # adjust if needed: /dev/ttyACM1 or /dev/ttyUSB0
+SERIAL_BAUD = 115200
 
-#generating wawes
-for x in range(NUMBEROFFRAMES):
-    WAVEDATA = WAVEDATA+chr(int(math.sin(x/((BITRATE/FREQUENCY)/math.pi))*127+128))    
+RECORD_MAX_S = 24 * 60 * 60
 
-for x in range(RESTFRAMES): 
-    WAVEDATA = WAVEDATA+chr(128)
-p = PyAudio()
-stream = p.open(format = p.get_format_from_width(1), 
-                channels = 1, 
-                rate = BITRATE, 
-                output = True)
-# end of audio garbage
 
-class stupidcam(object):
-    def __init__(self, camera, fn):
+# ----------------------------
+# Utilities
+# ----------------------------
+def ts():
+    """
+    Timestamp string for terminal logs.
+    Python 2.7 doesn't have time_ns/monotonic_ns, so we use:
+      - wall clock seconds with micro-ish precision as float
+      - plus a human-readable datetime
+    """
+    t = time.time()
+    # Keep both: ISO-like and epoch seconds
+    return "%s | %.6f" % (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"), t)
+
+
+_print_lock = threading.Lock()
+
+def log(msg):
+    with _print_lock:
+        sys.stdout.write("[%s] %s\n" % (ts(), msg))
+        sys.stdout.flush()
+
+
+# ----------------------------
+# GPIO
+# ----------------------------
+def setup_gpio(pin):
+    GPIO.setwarnings(False)
+    GPIO.setmode(GPIO_MODE)
+    GPIO.setup(pin, GPIO.OUT, initial=GPIO.LOW)
+
+
+def pulse(pulse_len_s=PULSE_LEN_S, pin=PULSE_PIN):
+    """
+    Emit TTL pulse and print exact transition moments to terminal.
+    """
+    GPIO.output(pin, GPIO.HIGH)
+    log("GPIO_HIGH pin=%s" % str(pin))
+
+    time.sleep(pulse_len_s)
+
+    GPIO.output(pin, GPIO.LOW)
+    log("GPIO_LOW  pin=%s" % str(pin))
+
+
+# ----------------------------
+# USB Serial reader (Arduino -> Pi)
+# ----------------------------
+class SerialReader(object):
+    def __init__(self, port, baud):
+        self.port = port
+        self.baud = baud
+        self.stop_evt = threading.Event()
+        self.thread = threading.Thread(target=self._run)
+        self.thread.daemon = True
+        self.ser = None
+
+    def start(self):
+        self.ser = serial.Serial(self.port, self.baud, timeout=0.2)
+        log("USB serial opened port=%s baud=%s" % (self.port, str(self.baud)))
+
+        # Optional: read a bit at startup so you see READY lines
+        t0 = time.time()
+        while time.time() - t0 < 2.0:
+            line = self._readline()
+            if line:
+                log("USB_RX %s" % line)
+                if line.startswith("READY"):
+                    break
+
+        self.thread.start()
+
+    def _readline(self):
+        try:
+            raw = self.ser.readline()
+            if not raw:
+                return ""
+            # strip \r\n and make safe printable
+            return raw.decode("utf-8", "ignore").strip()
+        except Exception:
+            return ""
+
+    def _run(self):
+        while not self.stop_evt.is_set():
+            line = self._readline()
+            if line:
+                log("USB_RX %s" % line)
+
+    def close(self):
+        self.stop_evt.set()
+        try:
+            self.thread.join(1.0)
+        except Exception:
+            pass
+        try:
+            if self.ser:
+                self.ser.close()
+        except Exception:
+            pass
+        log("USB serial closed")
+
+
+# ----------------------------
+# PiCamera output wrapper: pulse per completed frame
+# ----------------------------
+class PulseOnFrameComplete(io.RawIOBase):
+    def __init__(self, camera, filename):
         self.camera = camera
-        self.video_output = io.open(fn, 'wb')
+        self.video_output = io.open(filename, "wb")
+
     def write(self, buf):
-        self.video_output.write(buf)
+        n = self.video_output.write(buf)
+
+        # When frame completes, emit pulse in a thread so write() isn't blocked
         if self.camera.frame.complete:
-            Thread(target=pulse, args=()).start()
+            t = threading.Thread(target=pulse)
+            t.daemon = True
+            t.start()
 
-def pulse(pulse_len=0.005, pin=8):
-    GPIO.output(pin, GPIO.HIGH) # Turn on
-    time.sleep(pulse_len)
-    GPIO.output(pin, GPIO.LOW) # Turn off
+        return n
 
-### generate stupid sound
-def beep(stream, WAVEDATA):
-    Thread(target=pulse, args=(LENGTH, 10)).start()
-    stream.write(WAVEDATA)
-    Thread(target=pulse, args=(LENGTH, 16)).start()
-    Thread(target=pulse, args=(LENGTH, 18)).start()
-    time.sleep(3)
-    Thread(target=pulse, args=(0.05, 12)).start()
+    def close(self):
+        try:
+            if not self.video_output.closed:
+                self.video_output.close()
+        finally:
+            io.RawIOBase.close(self)
 
-def killcam(cam):
-    print('go away!')
-    cam.stop_recording()
 
-if len(sys.argv) < 3:
-    print('Error: You need to provide animal and session IDs')
-    sys.exit(0)
+# ----------------------------
+# Main
+# ----------------------------
+def main():
+    if len(sys.argv) < 3:
+        sys.stdout.write("Error: You need to provide animal and session IDs\n")
+        sys.stdout.write("Usage: python record_cam_terminal.py <animal_id> <session_id>\n")
+        return 1
 
-fn = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_") + sys.argv[1] + "_" + sys.argv[2] + ".h264"
-print('starting acquisition from camera ...')
+    animal_id = sys.argv[1]
+    session_id = sys.argv[2]
 
-cam = picamera.PiCamera()
-cam.resolution = (640, 480)
-cam.framerate = 30
+    base = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_") + animal_id + "_" + session_id
+    video_fn = base + ".h264"
 
-keyboard.add_hotkey('t', beep, args=(stream, WAVEDATA))
-keyboard.add_hotkey('q', killcam, args=[cam])
+    setup_gpio(PULSE_PIN)
 
-cam.start_preview(fullscreen=False, window = (0, 0, 640, 480))
-cam.start_recording(stupidcam(cam, fn), format='h264')
-cam.wait_recording(24 * 60 * 60)
-cam.stop_preview()
-cam.stop_recording()
-cam.close()
+    serial_reader = None
+    cam = None
+    writer = None
+
+    try:
+        log("Saving video: %s" % video_fn)
+
+        # Start Arduino USB RX logging (non-fatal if missing)
+        try:
+            serial_reader = SerialReader(SERIAL_PORT, SERIAL_BAUD)
+            serial_reader.start()
+        except Exception as e:
+            log("WARNING: could not open serial %s (%s). Continuing without USB RX logging." %
+                (SERIAL_PORT, str(e)))
+            serial_reader = None
+
+        cam = picamera.PiCamera()
+        cam.resolution = RESOLUTION
+        cam.framerate = FRAMERATE
+
+        # Preview is optional; disable if headless
+        cam.start_preview(fullscreen=False, window=(0, 0, RESOLUTION[0], RESOLUTION[1]))
+
+        writer = PulseOnFrameComplete(cam, video_fn)
+        cam.start_recording(writer, format="h264")
+
+        log("Recording started. Ctrl+C to stop.")
+        cam.wait_recording(RECORD_MAX_S)
+
+        return 0
+
+    except KeyboardInterrupt:
+        log("Stopping (KeyboardInterrupt).")
+        return 0
+
+    finally:
+        # Stop camera cleanly
+        try:
+            if cam:
+                try:
+                    cam.stop_recording()
+                except Exception:
+                    pass
+                try:
+                    cam.stop_preview()
+                except Exception:
+                    pass
+                try:
+                    cam.close()
+                except Exception:
+                    pass
+        finally:
+            try:
+                if writer:
+                    writer.close()
+            except Exception:
+                pass
+
+            if serial_reader:
+                serial_reader.close()
+
+            # Ensure GPIO low and cleanup
+            try:
+                GPIO.output(PULSE_PIN, GPIO.LOW)
+            except Exception:
+                pass
+            try:
+                GPIO.cleanup()
+            except Exception:
+                pass
+
+            log("Clean exit.")
+
+if __name__ == "__main__":
+    sys.exit(main())
