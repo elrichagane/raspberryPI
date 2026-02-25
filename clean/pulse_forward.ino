@@ -1,28 +1,33 @@
 /*
   gpio_timestamp_bridge.ino (Arduino Mega 2560)
 
-  Input: TTL pulse from Raspberry Pi GPIO (3.3V) into an interrupt pin
+  Input: TTL pulse from Raspberry Pi GPIO (3.3V) into interrupt pin 2
   Output: Timestamp for each pulse over USB serial
 
   Output format (CSV):
     PULSE,<seq>,<t_us_32>,<t_us_64>
 
-  Notes:
-  - Connect Pi GND to Arduino GND.
-  - Use Arduino Mega interrupt-capable pins: 2, 3, 18, 19, 20, 21.
-  - 3.3V from Pi is OK into Mega input (do NOT send 5V into Pi GPIO).
+  LED:
+    Onboard LED (pin 13) flashes for 20ms on each detected pulse.
 */
 
 #include <Arduino.h>
 
 // ------------ User configuration ------------
-const uint8_t PULSE_PIN = 2;          // Mega interrupt pin (recommended D2)
+const uint8_t PULSE_PIN = 2;          // Interrupt pin
 const unsigned long BAUD = 115200;
 
 // Ignore triggers closer than this (helps reject double edges/noise).
 // Set to 0 to disable.
 const uint32_t MIN_INTERVAL_US = 200;
 // -------------------------------------------
+
+// LED indicator
+const uint8_t LED_PIN = LED_BUILTIN;
+const uint32_t LED_ON_TIME_MS = 20;   // LED stays on 20ms per pulse
+
+bool led_on = false;
+uint32_t led_on_timestamp = 0;
 
 // ISR-updated state
 volatile uint32_t isr_last_micros = 0;
@@ -32,6 +37,9 @@ volatile bool     isr_flag = false;
 // 64-bit time extension state (main loop)
 uint32_t prev_micros_main = 0;
 uint64_t micros64_base = 0;  // increments by 2^32 when micros() wraps
+
+// Sequence counter
+uint32_t seq = 0;
 
 // Extend 32-bit micros() to 64-bit monotonically increasing microseconds
 uint64_t micros64_now(uint32_t now32) {
@@ -52,10 +60,8 @@ void printU64(uint64_t v) {
     return;
   }
 
-  // Print high part, then low part zero-padded to 10 digits (since 2^32-1 is 10 digits)
   Serial.print(hi);
   char buf[11];
-  // zero-pad low to 10 digits
   snprintf(buf, sizeof(buf), "%010lu", (unsigned long)lo);
   Serial.print(buf);
 }
@@ -74,13 +80,13 @@ void onPulseRise() {
   isr_flag = true;
 }
 
-uint32_t seq = 0;
-
 void setup() {
   Serial.begin(BAUD);
-  while (!Serial) { ; } // helps on native USB boards; harmless on Mega
+  while (!Serial) { ; }
 
-  pinMode(PULSE_PIN, INPUT);  // Pi drives the line
+  pinMode(PULSE_PIN, INPUT);  
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
 
   attachInterrupt(digitalPinToInterrupt(PULSE_PIN), onPulseRise, RISING);
 
@@ -88,7 +94,10 @@ void setup() {
 }
 
 void loop() {
+
+  // If a pulse was captured by ISR
   if (isr_flag) {
+
     // Copy ISR data atomically
     noInterrupts();
     uint32_t t32 = isr_micros;
@@ -105,5 +114,16 @@ void loop() {
     Serial.print(",");
     printU64(t64);
     Serial.println();
+
+    // Turn LED ON
+    digitalWrite(LED_PIN, HIGH);
+    led_on = true;
+    led_on_timestamp = millis();
+  }
+
+  // Turn LED OFF after timeout (non-blocking)
+  if (led_on && (millis() - led_on_timestamp >= LED_ON_TIME_MS)) {
+    digitalWrite(LED_PIN, LOW);
+    led_on = false;
   }
 }
