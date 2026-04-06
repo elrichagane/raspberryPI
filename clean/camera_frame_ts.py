@@ -2,9 +2,11 @@
 # -*- coding: utf-8 -*-
 
 """
-Python 2.7 (Raspberry Pi):
+Raspberry Pi:
 - Record H.264 video with PiCamera
 - Save per-frame timestamps to CSV
+- Send 3 GPIO pulses at the start of recording
+- Send 3 GPIO pulses at the end of recording
 
 Usage:
     python record_cam_terminal.py <animal_id> <session_id>
@@ -21,6 +23,7 @@ import sys
 import time
 
 import picamera
+import RPi.GPIO as GPIO
 
 
 # ----------------------------
@@ -30,6 +33,12 @@ RESOLUTION = (640, 480)
 FRAMERATE = 30
 RECORD_MAX_S = 24 * 60 * 60
 ENABLE_PREVIEW = True
+
+GPIO_MODE = GPIO.BOARD
+PULSE_PIN = 8
+PULSE_LEN_S = 0.005
+PULSE_COUNT = 3
+PULSE_GAP_S = 0.001
 
 
 # ----------------------------
@@ -48,12 +57,29 @@ def log(msg):
 
 
 # ----------------------------
+# GPIO
+# ----------------------------
+def setup_gpio():
+    GPIO.setwarnings(False)
+    GPIO.setmode(GPIO_MODE)
+    GPIO.setup(PULSE_PIN, GPIO.OUT, initial=GPIO.LOW)
+
+
+def pulse_train(count=PULSE_COUNT):
+    for _ in range(count):
+        GPIO.output(PULSE_PIN, GPIO.HIGH)
+        time.sleep(PULSE_LEN_S)
+        GPIO.output(PULSE_PIN, GPIO.LOW)
+        time.sleep(PULSE_GAP_S)
+
+
+# ----------------------------
 # PiCamera output wrapper
 # ----------------------------
 class FrameTimestampWriter(io.RawIOBase):
     def __init__(self, camera, video_filename, csv_filename):
         self.camera = camera
-        self.video_output = io.open(video_filename, "wb")
+        self.video_output = open(video_filename, "wb")
         self.csv_file = open(csv_filename, "a", newline="")
         self.csv_writer = csv.writer(self.csv_file)
         self.last_frame_index = None
@@ -120,6 +146,9 @@ def main():
 
     cam = None
     writer = None
+    recording_started = False
+
+    setup_gpio()
 
     try:
         log("Saving video: %s" % video_fn)
@@ -133,7 +162,12 @@ def main():
             cam.start_preview(fullscreen=False, window=(0, 0, RESOLUTION[0], RESOLUTION[1]))
 
         writer = FrameTimestampWriter(cam, video_fn, csv_fn)
+
+        log("Sending start pulse train")
+        pulse_train()
+
         cam.start_recording(writer, format="h264")
+        recording_started = True
 
         log("Recording started. Ctrl+C to stop.")
         cam.wait_recording(RECORD_MAX_S)
@@ -145,11 +179,19 @@ def main():
 
     finally:
         try:
-            if cam:
+            if cam and recording_started:
                 try:
                     cam.stop_recording()
                 except Exception:
                     pass
+
+                try:
+                    log("Sending end pulse train")
+                    pulse_train()
+                except Exception:
+                    pass
+
+            if cam:
                 try:
                     if ENABLE_PREVIEW:
                         cam.stop_preview()
@@ -159,10 +201,22 @@ def main():
                     cam.close()
                 except Exception:
                     pass
+
         finally:
             try:
                 if writer:
                     writer.close()
+                pass
+            except Exception:
+                pass
+
+            try:
+                GPIO.output(PULSE_PIN, GPIO.LOW)
+            except Exception:
+                pass
+
+            try:
+                GPIO.cleanup()
             except Exception:
                 pass
 
