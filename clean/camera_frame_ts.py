@@ -54,7 +54,7 @@ class FrameTimestampWriter(io.RawIOBase):
     def __init__(self, camera, video_filename, csv_filename):
         self.camera = camera
         self.video_output = io.open(video_filename, "wb")
-        self.csv_file = io.open(csv_filename, "ab")
+        self.csv_file = open(csv_filename, "a", newline="")
         self.csv_writer = csv.writer(self.csv_file)
         self.last_frame_index = None
 
